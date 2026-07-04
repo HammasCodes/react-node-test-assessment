@@ -3,6 +3,8 @@ const router = express.Router();
 const Message = require('../models/Message');
 const upload = require('../middleware/upload');
 const path = require('path');
+const pusher = require('../config/pusher');
+const CHANNEL = 'chat';
 
 // Get all messages
 router.get('/', async (req, res) => {
@@ -17,6 +19,23 @@ router.get('/', async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to fetch messages' });
   }
 });
+
+router.get('/search', async (req, res) => {
+  try {
+    const q = req.query.q;
+
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'Search query is required' });
+    }
+
+    const messages = await Message.search(q.trim());
+    res.json({ success: true, messages });
+  } catch (error) {
+    console.error('Error searching messages:', error);
+    res.status(500).json({ success: false, error: 'Failed to search messages' });
+  }
+});
+
 
 // Create a new text message
 router.post('/', async (req, res) => {
@@ -38,6 +57,8 @@ router.post('/', async (req, res) => {
     }
 
     const newMessage = await Message.create(username, message.trim());
+
+    pusher.trigger(CHANNEL, 'new-message', newMessage);
 
     res.status(201).json({ success: true, message: newMessage });
   } catch (error) {
@@ -70,6 +91,8 @@ router.post('/with-image', upload.single('image'), async (req, res) => {
     const messageText = message ? message.trim() : '';
 
     const newMessage = await Message.create(username, messageText, imageUrl);
+
+    pusher.trigger(CHANNEL, 'new-message', newMessage);
 
     res.status(201).json({ success: true, message: newMessage });
   } catch (error) {
@@ -121,6 +144,8 @@ router.delete('/:id', async (req, res) => {
         error: 'Message not found' 
       });
     }
+
+    pusher.trigger(CHANNEL, 'message-deleted', { id: deletedMessage.id });
 
     res.json({ success: true, message: 'Message deleted successfully' });
   } catch (error) {

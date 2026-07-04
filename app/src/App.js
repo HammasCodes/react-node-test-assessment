@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
+import pusher from './pusher';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -11,7 +12,9 @@ function App() {
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(''); const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -23,6 +26,48 @@ function App() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    const channel = pusher.subscribe('chat');
+
+    channel.bind('new-message', (data) => {
+      setMessages((prev) => {
+        if (prev.some((msg) => msg.id === data.id)) {
+          return prev;
+        }
+        return [...prev, data];
+      });
+    });
+
+    channel.bind('message-deleted', (data) => {
+      setMessages((prev) => prev.filter((msg) => msg.id !== data.id));
+      setSearchResults((prev) => prev.filter((msg) => msg.id !== data.id));
+    });
+
+
+
+    return () => {
+      channel.unbind_all();
+      pusher.unsubscribe('chat');
+    };
+  }, []);
+
+  useEffect(() => {
+    const trimmed = searchTerm.trim();
+
+    if (!trimmed) {
+      setSearchResults([]);
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      searchMessages(trimmed);
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchTerm]);
+
+
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -41,6 +86,22 @@ function App() {
       setLoading(false);
     }
   };
+
+
+  const searchMessages = async (term) => {
+    try {
+      setSearching(true);
+      const response = await axios.get(`${API_BASE_URL}/api/messages/search`, {
+        params: { q: term }
+      });
+      setSearchResults(response.data.messages || []);
+    } catch (err) {
+      console.error('Error searching messages:', err);
+    } finally {
+      setSearching(false);
+    }
+  };
+
 
   const handleImageSelect = (e) => {
     const file = e.target.files[0];
@@ -91,39 +152,26 @@ function App() {
       setLoading(true);
       setError('');
 
-      let createdMessage = null;
-
       if (selectedImage) {
         const formData = new FormData();
         formData.append('username', username.trim());
         formData.append('message', messageText.trim());
         formData.append('image', selectedImage);
 
-        const response = await axios.post(`${API_BASE_URL}/api/messages/with-image`, formData, {
+        await axios.post(`${API_BASE_URL}/api/messages/with-image`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
-        createdMessage = response.data?.message;
         removeImage();
       } else {
-        const response = await axios.post(`${API_BASE_URL}/api/messages`, {
+        await axios.post(`${API_BASE_URL}/api/messages`, {
           username: username.trim(),
           message: messageText.trim(),
         });
-        createdMessage = response.data?.message;
       }
 
       setMessageText('');
-
-      // Refresh messages to show the new one
-      if (createdMessage) {
-        setMessages((prev) => {
-          if (prev.some((msg) => msg.id === createdMessage.id)) {
-            return prev;
-          }
-          return [...prev, createdMessage];
-        });
-      }
     } catch (err) {
+
       setError(err.response?.data?.error || 'Failed to send message');
       console.error('Error sending message:', err);
     } finally {
@@ -138,7 +186,6 @@ function App() {
 
     try {
       await axios.delete(`${API_BASE_URL}/api/messages/${messageId}`);
-      setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to delete message');
       console.error('Error deleting message:', err);
@@ -150,6 +197,10 @@ function App() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const isSearching = searchTerm.trim().length > 0;
+  const displayedMessages = isSearching ? searchResults : messages;
+
+
   return (
     <div className="App">
       <header className="App-header">
@@ -158,15 +209,30 @@ function App() {
       </header>
 
       <main className="chat-container">
+        <div className="search-bar">
+          <input
+            type="text"
+            placeholder="Search messages..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="search-input"
+          />
+        </div>
+
         <div className="chat-messages" id="messages-container">
-          {loading && messages.length === 0 ? (
+          {isSearching && searching ? (
+            <div className="loading">Searching...</div>
+          ) : isSearching && displayedMessages.length === 0 ? (
+            <div className="no-messages">No results found</div>
+          ) : !isSearching && loading && displayedMessages.length === 0 ? (
             <div className="loading">Loading messages...</div>
-          ) : messages.length === 0 ? (
+          ) : !isSearching && displayedMessages.length === 0 ? (
             <div className="no-messages">
               No messages yet. Start the conversation!
             </div>
           ) : (
-            messages.map((msg) => (
+            displayedMessages.map((msg) => (
+
               <div key={msg.id} className="message-item">
                 <div className="message-header">
                   <span className="message-username">{msg.username}</span>
@@ -174,9 +240,9 @@ function App() {
                 </div>
                 {msg.image_url && (
                   <div className="message-image">
-                    <img 
-                      src={`${API_BASE_URL}${msg.image_url}`} 
-                      alt="Shared" 
+                    <img
+                      src={`${API_BASE_URL}${msg.image_url}`}
+                      alt="Shared"
                       onError={(e) => {
                         e.target.style.display = 'none';
                       }}
